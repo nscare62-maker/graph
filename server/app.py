@@ -6,6 +6,8 @@ and model benchmarking.
 
 import os
 import json
+import uuid
+import datetime
 from typing import Optional, List
 from fastapi import FastAPI, Query, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
@@ -47,6 +49,80 @@ class InteractionRequest(BaseModel):
     product_id: str
     action_type: str  # view, search_click, cart, purchase, rating
     rating_val: Optional[float] = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    primary_interest: str
+
+
+class CartItemRequest(BaseModel):
+    user_id: str
+    product_id: str
+
+
+class CheckoutRequest(BaseModel):
+    user_id: str
+
+
+active_sessions = {}
+
+
+def get_data_filepath(filename: str) -> str:
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, filename)
+
+
+def load_accounts() -> dict:
+    p = get_data_filepath("accounts.json")
+    accounts = {}
+    if os.path.exists(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                accounts = json.load(f)
+        except Exception:
+            accounts = {}
+    if "admin@gmail.com" not in accounts:
+        accounts["admin@gmail.com"] = {
+            "email": "admin@gmail.com",
+            "password": "123456",
+            "role": "admin",
+            "name": "System Administrator",
+            "user_id": "U0001"
+        }
+        save_accounts(accounts)
+    return accounts
+
+
+def save_accounts(accounts: dict):
+    p = get_data_filepath("accounts.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(accounts, f, indent=2)
+
+
+def load_json_file(filename: str) -> dict:
+    p = get_data_filepath(filename)
+    if os.path.exists(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_json_file(filename: str, data: dict):
+    p = get_data_filepath(filename)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
 @app.on_event("startup")
@@ -153,7 +229,16 @@ def get_overview():
 @app.get("/api/users")
 def get_users(limit: int = 150):
     """List available users with profile attributes."""
-    users_records = state.dataset.users_df.head(limit).to_dict("records")
+    df = state.dataset.users_df.copy()
+    if "user_idx" in df.columns:
+        df["user_idx"] = df["user_id"].map(lambda u: state.dataset.user2idx.get(u, 0)).fillna(0).astype(int)
+    df = df.fillna({
+        "age_group": "25-34",
+        "activity_level": "medium",
+        "primary_interest": "Electronics",
+        "interests": "Electronics"
+    }).fillna("")
+    users_records = df.head(limit).to_dict("records")
     return {"users": users_records}
 
 
@@ -219,12 +304,15 @@ def get_product_details(product_id: str):
 @app.get("/api/user/{user_id}/history")
 def get_user_history(user_id: str):
     """Fetch behavioral interaction history for a selected user."""
-    if user_id not in state.dataset.user2idx:
+    if user_id not in state.dataset.user2idx and not (state.builder and state.builder.graph.has_node(user_id)):
         raise HTTPException(status_code=404, detail="User not found")
 
-    df = state.dataset.interactions_df[state.dataset.interactions_df["user_id"] == user_id]
-    merged = df.merge(state.dataset.products_df, on="product_id", how="left")
-    records = merged[["timestamp", "action_type", "product_id", "name", "category", "price", "weight"]].sort_values(by="timestamp", ascending=False).to_dict("records")
+    records = []
+    if "user_id" in state.dataset.interactions_df.columns:
+        df = state.dataset.interactions_df[state.dataset.interactions_df["user_id"] == user_id]
+        if not df.empty:
+            merged = df.merge(state.dataset.products_df, on="product_id", how="left")
+            records = merged[["timestamp", "action_type", "product_id", "name", "category", "price", "weight"]].sort_values(by="timestamp", ascending=False).to_dict("records")
 
     live_context = state.user_live_sessions.get(user_id, [])
 
@@ -251,12 +339,26 @@ def get_recommendations(
     model = state.models[model_key]
     recent_items = state.user_live_sessions.get(user_id, [])
 
-    if model_key == "hybrid":
-        recs = model.recommend(user_id, k=k, filter_interacted=filter_seen, recent_session_items=recent_items)
-    elif model_key == "ppr":
-        recs = model.recommend(user_id, k=k, filter_interacted=filter_seen, context_product_ids=recent_items)
-    else:
-        recs = model.recommend(user_id, k=k, filter_interacted=filter_seen)
+    recs = []
+    try:
+        if model_key == "hybrid":
+            recs = model.recommend(user_id, k=k, filter_interacted=filter_seen, recent_session_items=recent_items)
+        elif model_key == "ppr":
+            recs = model.recommend(user_id, k=k, filter_interacted=filter_seen, context_product_ids=recent_items)
+        else:
+            recs = model.recommend(user_id, k=k, filter_interacted=filter_seen)
+    except Exception as e:
+        print(f"Error computing recommendations with {model_key} for {user_id}: {e}")
+        recs = []
+
+    # If recs is empty (e.g. cold start user), fall back to Popularity
+    if not recs:
+        pop_model = state.models.get("popularity")
+        if pop_model:
+            try:
+                recs = pop_model.recommend(user_id, k=k, filter_interacted=False)
+            except Exception:
+                pass
 
     return {
         "user_id": user_id,
@@ -330,9 +432,332 @@ def get_benchmark_metrics():
     """Return offline comparative performance results."""
     if state.benchmark_results is None:
         return {"error": "Benchmark not available"}
+    records = []
+    for r in state.benchmark_results.to_dict("records"):
+        rec = dict(r)
+        rec["HitRate@10"] = r.get("HR@10", 0)
+        rec["Precision@10"] = r.get("P@10", 0)
+        rec["Recall@10"] = r.get("R@10", 0)
+        rec["CatalogCoverage"] = r.get("Coverage", 0)
+        records.append(rec)
     return {
-        "results": state.benchmark_results.to_dict("records"),
+        "results": records,
         "chart_url": "/static/benchmark_results.png"
+    }
+
+
+# =====================================================================
+# Authentication & User Management Endpoints
+# =====================================================================
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    accounts = load_accounts()
+    email = req.email.strip().lower()
+    acc = accounts.get(email)
+    if not acc or acc.get("password") != req.password:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    return {
+        "status": "success",
+        "user": {
+            "email": acc["email"],
+            "name": acc.get("name", "User"),
+            "role": acc.get("role", "user"),
+            "user_id": acc.get("user_id", "U0001"),
+            "primary_interest": acc.get("primary_interest", "Electronics")
+        }
+    }
+
+
+@app.post("/api/auth/register")
+def register(req: RegisterRequest):
+    email = req.email.strip().lower()
+    accounts = load_accounts()
+    if email in accounts:
+        raise HTTPException(status_code=400, detail="An account with this email already exists")
+
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if len(req.password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+
+    # Determine next sequential user ID (e.g. U0101)
+    existing_uids = list(state.dataset.users_df["user_id"]) + [a.get("user_id", "") for a in accounts.values()]
+    max_num = 0
+    for uid in existing_uids:
+        if uid.startswith("U"):
+            try:
+                num = int(uid[1:])
+                if num > max_num:
+                    max_num = num
+            except ValueError:
+                pass
+    new_user_id = f"U{max_num + 1:04d}"
+    primary_interest = req.primary_interest.strip() or "Electronics"
+
+    # Persist account
+    new_acc = {
+        "email": email,
+        "password": req.password,
+        "role": "user",
+        "name": name,
+        "user_id": new_user_id,
+        "primary_interest": primary_interest
+    }
+    accounts[email] = new_acc
+    save_accounts(accounts)
+
+    # Persist user row to users.csv
+    import pandas as pd
+    users_csv = get_data_filepath("users.csv")
+    csv_row = pd.DataFrame([{
+        "user_id": new_user_id,
+        "name": name,
+        "age_group": "25-34",
+        "activity_level": "medium",
+        "primary_interest": primary_interest,
+        "interests": primary_interest
+    }])
+    if os.path.exists(users_csv):
+        csv_row.to_csv(users_csv, mode="a", header=False, index=False)
+
+    # Update in-memory dataset
+    new_idx = len(state.dataset.user2idx)
+    new_user_df = pd.DataFrame([{
+        "user_id": new_user_id,
+        "name": name,
+        "age_group": "25-34",
+        "activity_level": "medium",
+        "primary_interest": primary_interest,
+        "interests": primary_interest,
+        "user_idx": new_idx
+    }])
+    state.dataset.users_df = pd.concat([state.dataset.users_df, new_user_df], ignore_index=True)
+    state.dataset.user2idx[new_user_id] = new_idx
+    state.dataset.idx2user[new_idx] = new_user_id
+
+    # Add user node to live graph
+    from graph.schema import NodeType
+    state.builder.graph.add_node(
+        new_user_id,
+        entity_type=NodeType.USER.value,
+        label=name,
+        name=name,
+        age_group="25-34",
+        activity_level="medium",
+        interests=primary_interest,
+        title=f"User: {name} ({primary_interest})"
+    )
+    state.builder.undirected_graph.add_node(
+        new_user_id,
+        entity_type=NodeType.USER.value,
+        label=name,
+        name=name,
+        age_group="25-34",
+        activity_level="medium",
+        interests=primary_interest,
+        title=f"User: {name} ({primary_interest})"
+    )
+
+    # Seed initial onboarding view interactions matching customer's interest
+    import datetime
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    matched = state.dataset.products_df[state.dataset.products_df["category"] == primary_interest]
+    if matched.empty:
+        matched = state.dataset.products_df
+    seed_pids = matched.head(3)["product_id"].tolist()
+    state.user_live_sessions[new_user_id] = []
+    for pid in seed_pids:
+        state.builder.add_interaction(new_user_id, pid, "view", timestamp=now_str, session_id="ONBOARDING")
+        state.user_live_sessions[new_user_id].append(pid)
+
+    return {
+        "status": "success",
+        "user": {
+            "email": email,
+            "name": name,
+            "role": "user",
+            "user_id": new_user_id,
+            "primary_interest": primary_interest
+        }
+    }
+
+
+# =====================================================================
+# E-Commerce Customer Cart & Orders Endpoints
+# =====================================================================
+
+@app.get("/api/cart")
+def get_cart(user_id: str = Query(...)):
+    carts = load_json_file("carts.json")
+    user_cart = carts.get(user_id, [])
+    total_price = sum(item.get("price", 0.0) * item.get("quantity", 1) for item in user_cart)
+    count = sum(item.get("quantity", 1) for item in user_cart)
+    return {
+        "user_id": user_id,
+        "items": user_cart,
+        "total_price": round(total_price, 2),
+        "count": count
+    }
+
+
+@app.post("/api/cart/add")
+def add_to_cart(req: CartItemRequest):
+    u_id = req.user_id
+    p_id = req.product_id
+
+    prod_row = state.dataset.products_df[state.dataset.products_df["product_id"] == p_id]
+    if prod_row.empty:
+        raise HTTPException(status_code=404, detail="Product not found")
+    prod = prod_row.iloc[0]
+
+    carts = load_json_file("carts.json")
+    user_cart = carts.get(u_id, [])
+
+    found = False
+    for item in user_cart:
+        if item.get("product_id") == p_id:
+            item["quantity"] = item.get("quantity", 1) + 1
+            found = True
+            break
+    if not found:
+        user_cart.append({
+            "product_id": p_id,
+            "name": prod["name"],
+            "category": prod["category"],
+            "price": float(prod["price"]),
+            "brand": prod.get("brand", "Generic"),
+            "quantity": 1
+        })
+
+    carts[u_id] = user_cart
+    save_json_file("carts.json", carts)
+
+    # Dynamic behavior edge insertion into the live graph
+    import datetime
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if state.builder.graph.has_node(u_id) and state.builder.graph.has_node(p_id):
+        state.builder.add_interaction(u_id, p_id, "cart", timestamp=now_str, session_id="LIVE_SESSION")
+
+    # Update session context
+    if u_id not in state.user_live_sessions:
+        state.user_live_sessions[u_id] = []
+    if p_id not in state.user_live_sessions[u_id]:
+        state.user_live_sessions[u_id].append(p_id)
+        if len(state.user_live_sessions[u_id]) > 5:
+            state.user_live_sessions[u_id].pop(0)
+
+    total_price = sum(item.get("price", 0.0) * item.get("quantity", 1) for item in user_cart)
+    count = sum(item.get("quantity", 1) for item in user_cart)
+
+    return {
+        "status": "success",
+        "message": f"Added '{prod['name']}' to cart",
+        "cart": {
+            "items": user_cart,
+            "total_price": round(total_price, 2),
+            "count": count
+        }
+    }
+
+
+@app.post("/api/cart/remove")
+def remove_from_cart(req: CartItemRequest):
+    u_id = req.user_id
+    p_id = req.product_id
+
+    carts = load_json_file("carts.json")
+    user_cart = carts.get(u_id, [])
+
+    new_cart = []
+    for item in user_cart:
+        if item.get("product_id") == p_id:
+            if item.get("quantity", 1) > 1:
+                item["quantity"] -= 1
+                new_cart.append(item)
+        else:
+            new_cart.append(item)
+
+    carts[u_id] = new_cart
+    save_json_file("carts.json", carts)
+
+    total_price = sum(item.get("price", 0.0) * item.get("quantity", 1) for item in new_cart)
+    count = sum(item.get("quantity", 1) for item in new_cart)
+
+    return {
+        "status": "success",
+        "cart": {
+            "items": new_cart,
+            "total_price": round(total_price, 2),
+            "count": count
+        }
+    }
+
+
+@app.post("/api/cart/checkout")
+def checkout(req: CheckoutRequest):
+    u_id = req.user_id
+    carts = load_json_file("carts.json")
+    user_cart = carts.get(u_id, [])
+
+    if not user_cart:
+        raise HTTPException(status_code=400, detail="Shopping cart is empty")
+
+    import datetime
+    import uuid
+    now = datetime.datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    order_id = f"ORD-{int(now.timestamp())}-{uuid.uuid4().hex[:4].upper()}"
+
+    subtotal = sum(item.get("price", 0.0) * item.get("quantity", 1) for item in user_cart)
+    tax = round(subtotal * 0.08, 2)
+    shipping = 0.0 if subtotal > 50 else 9.99
+    total = round(subtotal + tax + shipping, 2)
+
+    order = {
+        "order_id": order_id,
+        "date": now_str,
+        "items": user_cart,
+        "item_count": sum(item.get("quantity", 1) for item in user_cart),
+        "subtotal": round(subtotal, 2),
+        "tax": tax,
+        "shipping": shipping,
+        "total": total,
+        "status": "Confirmed & Processing"
+    }
+
+    # Record purchase behavior edge for each item in the live graph
+    for item in user_cart:
+        pid = item.get("product_id")
+        if pid and state.builder.graph.has_node(u_id) and state.builder.graph.has_node(pid):
+            state.builder.add_interaction(u_id, pid, "purchase", timestamp=now_str, session_id="PURCHASE_SESSION")
+
+    # Persist order history
+    orders = load_json_file("orders.json")
+    user_orders = orders.get(u_id, [])
+    user_orders.insert(0, order)
+    orders[u_id] = user_orders
+    save_json_file("orders.json", orders)
+
+    # Empty user cart
+    carts[u_id] = []
+    save_json_file("carts.json", carts)
+
+    return {
+        "status": "success",
+        "message": "Order placed successfully!",
+        "order": order
+    }
+
+
+@app.get("/api/orders")
+def get_orders(user_id: str = Query(...)):
+    orders = load_json_file("orders.json")
+    return {
+        "user_id": user_id,
+        "orders": orders.get(user_id, [])
     }
 
 

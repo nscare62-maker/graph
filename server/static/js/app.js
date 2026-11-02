@@ -105,6 +105,7 @@ function getProductImageUrl(product) {
 // Initialize Application
 document.addEventListener("DOMContentLoaded", async () => {
   setupThemeToggle();
+  setupAuthListeners();
   setupNavigationTabs();
   setupCarouselScroll();
   setupCategoryFilters();
@@ -113,10 +114,20 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupSimulator();
 
   await fetchOverview();
-  await loadUsers();
   await loadProductsCatalog();
-  await refreshDashboard();
+
+  // Route to the appropriate portal (Auth, Admin, or Customer)
+  await applyActivePortal();
 });
+
+async function initAdminPortal() {
+  if (allUsers.length === 0) {
+    await loadUsers();
+  } else {
+    updateUserProfileCard();
+  }
+  await refreshDashboard();
+}
 
 // Setup Dark/Light Theme Switcher
 function setupThemeToggle() {
@@ -163,8 +174,14 @@ function setupNavigationTabs() {
 
       if (targetId === "tab-graph") {
         setTimeout(() => {
-          if (networkInstance) networkInstance.fit();
-        }, 150);
+          if (!networkInstance) {
+            loadUserEgoGraph(currentUserId);
+          } else {
+            networkInstance.setSize("100%", "600px");
+            networkInstance.redraw();
+            networkInstance.fit();
+          }
+        }, 100);
       }
       if (targetId === "tab-recs") {
         renderDedicatedRecsTab();
@@ -173,17 +190,23 @@ function setupNavigationTabs() {
   });
 
   // Graph Mode buttons
-  document.getElementById("btn-graph-ego").addEventListener("click", () => {
-    currentGraphMode = "ego";
-    highlightGraphBtn("btn-graph-ego");
-    loadUserEgoGraph(currentUserId);
-  });
+  const btnEgo = document.getElementById("btn-graph-ego");
+  if (btnEgo) {
+    btnEgo.addEventListener("click", () => {
+      currentGraphMode = "ego";
+      highlightGraphBtn("btn-graph-ego");
+      loadUserEgoGraph(currentUserId);
+    });
+  }
 
-  document.getElementById("btn-graph-sample").addEventListener("click", () => {
-    currentGraphMode = "sample";
-    highlightGraphBtn("btn-graph-sample");
-    loadSampleGraph();
-  });
+  const btnSample = document.getElementById("btn-graph-sample");
+  if (btnSample) {
+    btnSample.addEventListener("click", () => {
+      currentGraphMode = "sample";
+      highlightGraphBtn("btn-graph-sample");
+      loadSampleGraph();
+    });
+  }
 }
 
 function highlightGraphBtn(activeId) {
@@ -196,7 +219,7 @@ function highlightGraphBtn(activeId) {
 }
 
 // Horizontal Carousel Smooth Scrolling & Bidirectional Autoscroll
-let autoScrollActive = true;
+let autoScrollActive = false;
 let autoScrollDirection = 1; // 1 = Left-to-Right, -1 = Right-to-Left
 let autoScrollSpeed = 1.6;   // Noticeable, smooth cinematic gliding speed
 let scrollAccumulator = 0;
@@ -403,29 +426,46 @@ function setupModalHandlers() {
 
 // Setup User & Model Controls
 function setupSimulator() {
-  document.getElementById("user-select").addEventListener("change", async (e) => {
-    currentUserId = e.target.value;
-    updateUserProfileCard();
-    await refreshDashboard();
-  });
+  const userSelect = document.getElementById("user-select");
+  if (userSelect) {
+    userSelect.addEventListener("change", async (e) => {
+      currentUserId = e.target.value;
+      updateUserProfileCard();
+      await refreshDashboard();
+    });
+  }
 
-  document.getElementById("model-select").addEventListener("change", async () => {
-    await fetchRecommendations();
-  });
+  const modelSelect = document.getElementById("model-select");
+  if (modelSelect) {
+    modelSelect.addEventListener("change", async () => {
+      await fetchRecommendations();
+    });
+  }
 
-  document.getElementById("k-slider").addEventListener("input", (e) => {
-    document.getElementById("k-val-display").innerText = e.target.value;
-  });
+  const kSlider = document.getElementById("k-slider");
+  if (kSlider) {
+    kSlider.addEventListener("input", (e) => {
+      const kValDisplay = document.getElementById("k-val-display");
+      if (kValDisplay) kValDisplay.innerText = e.target.value;
+    });
 
-  document.getElementById("k-slider").addEventListener("change", async () => {
-    await fetchRecommendations();
-  });
+    kSlider.addEventListener("change", async () => {
+      await fetchRecommendations();
+    });
+  }
 
-  document.getElementById("btn-sim-action").addEventListener("click", async () => {
-    const prodId = document.getElementById("sim-product-select").value;
-    const action = document.getElementById("sim-action-select").value;
-    await triggerInteraction(currentUserId, prodId, action);
-  });
+  const btnSimAction = document.getElementById("btn-sim-action");
+  if (btnSimAction) {
+    btnSimAction.addEventListener("click", async () => {
+      const prodSelect = document.getElementById("sim-product-select");
+      const actionSelect = document.getElementById("sim-action-select");
+      const prodId = prodSelect ? prodSelect.value : "";
+      const action = actionSelect ? actionSelect.value : "view";
+      if (prodId) {
+        await triggerInteraction(currentUserId, prodId, action);
+      }
+    });
+  }
 }
 
 // Fetch System Overview Metrics
@@ -451,17 +491,22 @@ async function loadUsers() {
     allUsers = data.users || [];
 
     const select = document.getElementById("user-select");
-    select.innerHTML = "";
-    allUsers.forEach((u) => {
-      const opt = document.createElement("option");
-      opt.value = u.user_id;
-      opt.innerText = `${u.user_id} - ${u.name} (${u.primary_interest})`;
-      select.appendChild(opt);
-    });
+    if (select) {
+      select.innerHTML = "";
+      allUsers.forEach((u) => {
+        const opt = document.createElement("option");
+        opt.value = u.user_id;
+        opt.innerText = `${u.user_id} - ${u.name} (${u.primary_interest || 'General'})`;
+        select.appendChild(opt);
+      });
 
-    if (allUsers.length > 0) {
-      currentUserId = allUsers[0].user_id;
-      updateUserProfileCard();
+      if (allUsers.length > 0) {
+        if (!currentUserId || !allUsers.some(u => u.user_id === currentUserId)) {
+          currentUserId = allUsers[0].user_id;
+        }
+        select.value = currentUserId;
+        updateUserProfileCard();
+      }
     }
   } catch (err) {
     console.error("Failed to load users:", err);
@@ -574,10 +619,21 @@ async function openProductDetailsModal(productId) {
 
   // Action buttons
   document.getElementById("modal-btn-cart").onclick = () => {
-    triggerInteraction(currentUserId, productId, "cart");
+    const session = getCurrentSession();
+    if (session && session.role === "user") {
+      addToCustomerCart(session.user_id, productId);
+    } else {
+      triggerInteraction(currentUserId, productId, "cart");
+    }
   };
-  document.getElementById("modal-btn-buy").onclick = () => {
-    triggerInteraction(currentUserId, productId, "purchase");
+  document.getElementById("modal-btn-buy").onclick = async () => {
+    const session = getCurrentSession();
+    if (session && session.role === "user") {
+      await addToCustomerCart(session.user_id, productId, true);
+      await checkoutCustomerCart(session.user_id);
+    } else {
+      triggerInteraction(currentUserId, productId, "purchase");
+    }
   };
 
   // Fetch real-time graph stats for this product
@@ -615,27 +671,47 @@ async function openProductDetailsModal(productId) {
 
 // Update Active Customer Profile Card
 function updateUserProfileCard() {
-  const user = allUsers.find((u) => u.user_id === currentUserId);
+  const user = allUsers.find((u) => u.user_id === currentUserId) || allUsers[0];
   if (!user) return;
 
-  document.getElementById("user-avatar-text").innerText = user.name.charAt(0);
-  document.getElementById("user-card-name").innerText = user.name;
-  document.getElementById("user-card-id").innerText = `${user.user_id} • Age ${user.age_group} • ${user.activity_level.toUpperCase()}`;
+  currentUserId = user.user_id;
+
+  const userSelect = document.getElementById("user-select");
+  if (userSelect && userSelect.value !== user.user_id) {
+    userSelect.value = user.user_id;
+  }
+
+  const avatar = document.getElementById("user-avatar-text");
+  if (avatar) avatar.innerText = (user.name || "U").charAt(0).toUpperCase();
+
+  const nameEl = document.getElementById("user-card-name");
+  if (nameEl) nameEl.innerText = user.name || user.user_id;
+
+  const idEl = document.getElementById("user-card-id");
+  if (idEl) {
+    const age = user.age_group || "25-34";
+    const act = (user.activity_level || "active").toString().toUpperCase();
+    idEl.innerText = `${user.user_id} • Age ${age} • ${act}`;
+  }
 
   const chipsContainer = document.getElementById("user-card-interests");
-  chipsContainer.innerHTML = "";
-  (user.interests || "").split(",").forEach((item) => {
-    if (item.trim()) {
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.innerText = item.trim();
-      chipsContainer.appendChild(chip);
-    }
-  });
+  if (chipsContainer) {
+    chipsContainer.innerHTML = "";
+    const interestStr = user.interests || user.primary_interest || "General";
+    interestStr.split(",").forEach((item) => {
+      const clean = item.trim();
+      if (clean) {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.innerText = clean;
+        chipsContainer.appendChild(chip);
+      }
+    });
+  }
 
   const recSub = document.getElementById("recs-subtitle");
   if (recSub) {
-    recSub.innerText = `Personalized for ${user.name} (${user.primary_interest}) based on recursive graph convolutions & PageRank diffusion.`;
+    recSub.innerText = `Personalized for ${user.name} (${user.primary_interest || 'General'}) based on recursive graph convolutions & PageRank diffusion.`;
   }
 }
 
@@ -644,7 +720,7 @@ async function refreshDashboard() {
   await Promise.all([
     fetchUserHistory(currentUserId),
     fetchRecommendations(),
-    currentGraphMode === "ego" ? loadUserEgoGraph(currentUserId) : loadSampleGraph(),
+    loadUserEgoGraph(currentUserId),
     fetchBenchmark()
   ]);
 }
@@ -652,9 +728,11 @@ async function refreshDashboard() {
 // Fetch and Render Horizontal User History
 async function fetchUserHistory(userId) {
   try {
+    const container = document.getElementById("user-history-list");
+    if (!container) return;
+
     const res = await fetch(`/api/user/${userId}/history`);
     const data = await res.json();
-    const container = document.getElementById("user-history-list");
     container.innerHTML = "";
 
     const countEl = document.getElementById("user-history-count");
@@ -697,9 +775,12 @@ async function fetchUserHistory(userId) {
 let cachedRecommendations = [];
 
 async function fetchRecommendations() {
-  const model = document.getElementById("model-select").value;
-  const k = document.getElementById("k-slider").value;
+  const modelSelect = document.getElementById("model-select");
+  const model = modelSelect ? modelSelect.value : "hybrid";
+  const kSlider = document.getElementById("k-slider");
+  const k = kSlider ? kSlider.value : 8;
   const grid = document.getElementById("recs-container");
+  if (!grid) return;
   grid.innerHTML = '<div style="color:var(--text-muted); grid-column: 1/-1;">Computing personalized graph embeddings...</div>';
 
   try {
@@ -786,44 +867,207 @@ function renderRecommendationCards(container, items) {
   });
 }
 
+// Helper function to create rich, styled DOM tooltip for Vis.js Network
+function formatGraphTooltip(titleContent, itemData, isEdge = false) {
+  if (!titleContent && !itemData) return undefined;
+
+  const container = document.createElement("div");
+  container.className = "network-tooltip-card";
+
+  if (isEdge) {
+    const rel = itemData?.label || (typeof titleContent === "string" ? titleContent.split("<br")[0].replace("Relation:", "").trim() : "Interaction");
+    const weight = itemData?.raw_data?.weight || (typeof titleContent === "string" && titleContent.includes("Weight:") ? titleContent.split("Weight:")[1].trim() : "");
+    container.innerHTML = `
+      <div class="tt-header">
+        <span class="tt-id">${rel.toUpperCase()}</span>
+        <span class="tt-badge tt-badge-edge"><i class="fas fa-link"></i> Relation</span>
+      </div>
+      <div class="tt-body">
+        <div class="tt-row"><span class="tt-label">Type:</span> <span class="tt-val">${rel}</span></div>
+        ${weight ? `<div class="tt-row"><span class="tt-label">Weight:</span> <span class="tt-val">${weight}</span></div>` : ""}
+      </div>
+    `;
+    return container;
+  }
+
+  // Node formatting
+  const raw = itemData?.raw_data || {};
+  const group = itemData?.group || (itemData?.id?.startsWith("U") ? "user" : itemData?.id?.startsWith("P") ? "product" : "category");
+  const id = itemData?.id || "";
+
+  let icon = "fa-cube";
+  let badgeClass = "tt-badge-prod";
+  let typeLabel = "Product";
+
+  if (group === "user") {
+    icon = "fa-user";
+    badgeClass = "tt-badge-user";
+    typeLabel = "Customer";
+  } else if (group === "category") {
+    icon = "fa-tag";
+    badgeClass = "tt-badge-cat";
+    typeLabel = "Category";
+  }
+
+  let detailsHtml = "";
+  if (group === "user") {
+    const name = raw.name || id;
+    const interests = raw.interests || "General";
+    const activity = raw.activity_level || "Active";
+    detailsHtml = `
+      <div class="tt-row"><span class="tt-label">Name:</span> <span class="tt-val">${name}</span></div>
+      <div class="tt-row"><span class="tt-label">Interests:</span> <span class="tt-val">${interests}</span></div>
+      <div class="tt-row"><span class="tt-label">Activity:</span> <span class="tt-val">${activity}</span></div>
+    `;
+  } else if (group === "product") {
+    const name = raw.name || id;
+    const category = raw.category || "";
+    const priceVal = typeof raw.price === "number" ? `$${raw.price.toFixed(2)}` : (raw.price || "");
+    detailsHtml = `
+      <div class="tt-row"><span class="tt-label">Product:</span> <span class="tt-val">${name}</span></div>
+      ${category ? `<div class="tt-row"><span class="tt-label">Category:</span> <span class="tt-val">${category}</span></div>` : ""}
+      ${priceVal ? `<div class="tt-row"><span class="tt-label">Price:</span> <span class="tt-val">${priceVal}</span></div>` : ""}
+    `;
+  } else {
+    const name = raw.name || id.replace("CAT_", "");
+    detailsHtml = `
+      <div class="tt-row"><span class="tt-label">Category:</span> <span class="tt-val">${name}</span></div>
+    `;
+  }
+
+  container.innerHTML = `
+    <div class="tt-header">
+      <span class="tt-id">${id}</span>
+      <span class="tt-badge ${badgeClass}"><i class="fas ${icon}"></i> ${typeLabel}</span>
+    </div>
+    <div class="tt-body">
+      ${detailsHtml}
+    </div>
+  `;
+
+  return container;
+}
+
 // Vis.js Monochrome Black, White & Silver Network Graph
 function renderNetwork(graphData) {
   const container = document.getElementById("network-graph-container");
+  if (!container) return;
+
   const isLight = document.documentElement.getAttribute("data-theme") === "light";
 
-  // Palette adaptation for graph
-  const userColor = isLight ? "#090A0C" : "#FFFFFF";
-  const userFont = isLight ? "#FFFFFF" : "#090A0C";
-  const prodColor = isLight ? "#E2E8F0" : "#CBD5E1";
-  const prodFont = "#090A0C";
-  const catColor = isLight ? "#94A3B8" : "#64748B";
+  // High-contrast, crystal-clear typography and palette for Vis.js
+  const labelColor = isLight ? "#090A0C" : "#FFFFFF";
+  const strokeColor = isLight ? "#FFFFFF" : "#090A0C";
+  const strokeWidth = 4;
+
+  const userColor = isLight ? "#0284C7" : "#38BDF8";
+  const prodColor = isLight ? "#059669" : "#34D399";
+  const catColor = isLight ? "#7C3AED" : "#A78BFA";
 
   const nodes = (graphData.nodes || []).map((n) => {
-    if (n.group === "user") {
-      return { ...n, color: { background: userColor, border: "#CBD5E1" }, font: { color: userFont, face: "Inter", size: 12 } };
+    const grp = (n.group || "").toLowerCase();
+    const id = n.id || "";
+    const raw = n.raw_data || {};
+
+    let cleanTitle = `${id}`;
+    if (grp === "user" || id.startsWith("U")) {
+      cleanTitle += `\nType: Customer\nName: ${raw.name || id}\nInterests: ${raw.interests || 'General'}\nActivity: ${raw.activity_level || 'Active'}`;
+    } else if (grp === "category" || id.startsWith("CAT_") || id.startsWith("C_")) {
+      cleanTitle += `\nType: Category\nCategory: ${raw.name || id.replace('CAT_', '')}`;
+    } else {
+      const priceStr = typeof raw.price === 'number' ? `$${raw.price.toFixed(2)}` : (raw.price || '');
+      cleanTitle += `\nType: Product\nProduct: ${raw.name || id}\nCategory: ${raw.category || ''}`;
+      if (priceStr) cleanTitle += `\nPrice: ${priceStr}`;
     }
-    if (n.group === "product") {
-      return { ...n, color: { background: prodColor, border: "#94A3B8" }, font: { color: prodFont, face: "Inter", size: 11 } };
+
+    let bg = prodColor;
+    let border = isLight ? "#047857" : "#6EE7B7";
+    let size = 20;
+
+    if (grp === "user" || id.startsWith("U")) {
+      bg = userColor;
+      border = isLight ? "#0369A1" : "#BAE6FD";
+      size = 24;
+    } else if (grp === "category" || id.startsWith("CAT_") || id.startsWith("C_")) {
+      bg = catColor;
+      border = isLight ? "#6D28D9" : "#DDD6FE";
+      size = 18;
     }
-    return { ...n, color: { background: catColor, border: "#475569" }, font: { color: "#FFFFFF", face: "Inter", size: 11 } };
+
+    return {
+      ...n,
+      title: cleanTitle,
+      size: size,
+      color: {
+        background: bg,
+        border: border,
+        highlight: { background: "#FFFFFF", border: "#FFFFFF" }
+      },
+      font: {
+        color: labelColor,
+        face: "Inter, system-ui, -apple-system, sans-serif",
+        size: 13,
+        strokeWidth: strokeWidth,
+        strokeColor: strokeColor,
+        multi: true,
+        vadjust: 0
+      }
+    };
   });
 
   const edges = (graphData.edges || []).map((e) => {
-    let edgeColor = isLight ? "#94A3B8" : "#64748B";
-    if (e.label === "PURCHASED") edgeColor = isLight ? "#090A0C" : "#FFFFFF";
-    if (e.label === "CARTED") edgeColor = isLight ? "#475569" : "#CBD5E1";
-    return { ...e, color: { color: edgeColor, highlight: "#FFFFFF" }, font: { color: isLight ? "#475569" : "#94A3B8", size: 9, align: "middle" } };
+    const relUpper = (e.label || "").toUpperCase();
+    let edgeColor = isLight ? "#64748B" : "#94A3B8";
+    let edgeWidth = 1.8;
+
+    if (relUpper.includes("PURCHASE")) {
+      edgeColor = isLight ? "#0284C7" : "#38BDF8";
+      edgeWidth = 3.0;
+    } else if (relUpper.includes("CART")) {
+      edgeColor = isLight ? "#059669" : "#34D399";
+      edgeWidth = 2.4;
+    } else if (relUpper.includes("SEARCH")) {
+      edgeColor = isLight ? "#D97706" : "#FBBF24";
+      edgeWidth = 2.0;
+    } else if (relUpper.includes("BELONGS")) {
+      edgeColor = isLight ? "#7C3AED" : "#A78BFA";
+      edgeWidth = 1.6;
+    }
+
+    const cleanEdgeTitle = `Relation: ${relUpper}\nWeight: ${e.raw_data?.weight || 1.0}`;
+    return {
+      ...e,
+      title: cleanEdgeTitle,
+      width: edgeWidth,
+      color: { color: edgeColor, highlight: "#FFFFFF" },
+      font: {
+        color: labelColor,
+        size: 11,
+        strokeWidth: 3,
+        strokeColor: strokeColor,
+        face: "Inter, system-ui, -apple-system, sans-serif",
+        align: "middle"
+      }
+    };
   });
 
   const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
   const options = {
     nodes: {
       borderWidth: 2,
-      shadow: true
+      shadow: true,
+      font: {
+        strokeWidth: strokeWidth,
+        strokeColor: strokeColor
+      }
     },
     edges: {
       shadow: false,
-      smooth: { type: "continuous" }
+      smooth: { type: "continuous" },
+      font: {
+        strokeWidth: 3,
+        strokeColor: strokeColor
+      }
     },
     physics: {
       stabilization: { iterations: 120 },
@@ -835,6 +1079,7 @@ function renderNetwork(graphData) {
     },
     interaction: {
       hover: true,
+      tooltipDelay: 100,
       zoomView: true,
       dragView: true
     }
@@ -842,23 +1087,57 @@ function renderNetwork(graphData) {
 
   if (networkInstance) {
     networkInstance.destroy();
+    networkInstance = null;
   }
 
   networkInstance = new vis.Network(container, data, options);
+  networkInstance.setSize("100%", "600px");
+
+  setTimeout(() => {
+    if (networkInstance) {
+      networkInstance.redraw();
+      networkInstance.fit();
+    }
+  }, 100);
+
+  const handleNodeInteraction = (clickedId) => {
+    if (!clickedId) return;
+    if (clickedId.startsWith("P")) {
+      openProductDetailsModal(clickedId);
+    } else if (clickedId.startsWith("U")) {
+      const userSelect = document.getElementById("user-select");
+      if (userSelect && userSelect.value !== clickedId) {
+        userSelect.value = clickedId;
+        currentUserId = clickedId;
+        updateUserProfileCard();
+        refreshDashboard();
+        showToast(`Switched active customer to ${clickedId}`);
+      } else {
+        showToast(`Customer: ${clickedId}`);
+      }
+    } else {
+      showToast(`Category: ${clickedId.replace("CAT_", "")}`);
+    }
+  };
 
   networkInstance.on("click", (params) => {
     if (params.nodes.length > 0) {
-      const clickedId = params.nodes[0];
-      if (clickedId.startsWith("P")) {
-        openProductDetailsModal(clickedId);
-      }
+      handleNodeInteraction(params.nodes[0]);
+    }
+  });
+
+  networkInstance.on("selectNode", (params) => {
+    if (params.nodes && params.nodes.length > 0) {
+      handleNodeInteraction(params.nodes[0]);
     }
   });
 }
 
 async function loadUserEgoGraph(userId) {
   try {
-    document.getElementById("graph-title-status").innerText = `Customer Ego-Network (${userId})`;
+    const titleEl = document.getElementById("graph-title-status");
+    if (titleEl) titleEl.innerText = `Customer Ego-Network (${userId})`;
+
     const res = await fetch(`/api/graph/user-ego?user_id=${userId}`);
     const data = await res.json();
     renderNetwork(data);
@@ -869,7 +1148,9 @@ async function loadUserEgoGraph(userId) {
 
 async function loadSampleGraph() {
   try {
-    document.getElementById("graph-title-status").innerText = "Macro Multi-Relational Catalog Network";
+    const titleEl = document.getElementById("graph-title-status");
+    if (titleEl) titleEl.innerText = "Customer Ego-Network";
+
     const res = await fetch("/api/graph/sample");
     const data = await res.json();
     renderNetwork(data);
@@ -889,7 +1170,9 @@ async function inspectExplanationGraph(userId, productId) {
     const graphPanel = document.getElementById("tab-graph");
     if (graphPanel) graphPanel.style.display = "block";
 
-    document.getElementById("graph-title-status").innerText = `Reasoning Path: Customer ${userId} ➔ Product ${productId}`;
+    const titleEl = document.getElementById("graph-title-status");
+    if (titleEl) titleEl.innerText = `Reasoning Path: Customer ${userId} ➔ Product ${productId}`;
+
     const res = await fetch(`/api/graph/explain?user_id=${userId}&product_id=${productId}`);
     const data = await res.json();
     renderNetwork(data);
@@ -941,20 +1224,28 @@ async function fetchBenchmark() {
         tr.style.fontWeight = "700";
       }
 
+      const ndcg = Number(row["NDCG@10"] ?? 0);
+      const hr = Number(row["HitRate@10"] ?? row["HR@10"] ?? 0);
+      const prec = Number(row["Precision@10"] ?? row["P@10"] ?? 0);
+      const rec = Number(row["Recall@10"] ?? row["R@10"] ?? 0);
+      const cov = Number(row["CatalogCoverage"] ?? row["Coverage"] ?? 0);
+      const div = Number(row["Diversity"] ?? 0);
+
       tr.innerHTML = `
         <td style="color:var(--text-primary);"><i class="fas ${isTop ? 'fa-award' : 'fa-circle-notch'}" style="margin-right:6px; font-size:0.75rem;"></i>${row["Model"]}</td>
-        <td>${Number(row["NDCG@10"]).toFixed(4)}</td>
-        <td>${Number(row["HitRate@10"]).toFixed(4)}</td>
-        <td>${Number(row["Precision@10"]).toFixed(4)}</td>
-        <td>${Number(row["Recall@10"]).toFixed(4)}</td>
-        <td>${(Number(row["CatalogCoverage"]) * 100).toFixed(1)}%</td>
-        <td>${Number(row["Diversity"]).toFixed(3)}</td>
+        <td>${ndcg.toFixed(4)}</td>
+        <td>${hr.toFixed(4)}</td>
+        <td>${prec.toFixed(4)}</td>
+        <td>${rec.toFixed(4)}</td>
+        <td>${(cov * 100).toFixed(1)}%</td>
+        <td>${div.toFixed(3)}</td>
       `;
       tbody.appendChild(tr);
     });
 
-    if (data.chart_url) {
-      document.getElementById("benchmark-chart-img").src = `${data.chart_url}?t=${Date.now()}`;
+    const chartImg = document.getElementById("benchmark-chart-img");
+    if (chartImg && data.chart_url) {
+      chartImg.src = `${data.chart_url}?t=${Date.now()}`;
     }
   } catch (err) {
     console.error("Failed to load benchmark:", err);
@@ -973,4 +1264,635 @@ function showToast(msg, isError = false) {
   toastTimeout = setTimeout(() => {
     toast.classList.remove("show");
   }, 3500);
+}
+
+
+// ==========================================================================
+// SESSION MANAGEMENT & AUTHENTICATION CONTROLLER
+// ==========================================================================
+
+function getCurrentSession() {
+  try {
+    const s = localStorage.getItem("graphrec_session");
+    return s ? JSON.parse(s) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveSession(user) {
+  localStorage.setItem("graphrec_session", JSON.stringify(user));
+}
+
+function clearSession() {
+  localStorage.removeItem("graphrec_session");
+}
+
+function setupAuthListeners() {
+  const tabSignIn = document.getElementById("tab-btn-signin");
+  const tabSignUp = document.getElementById("tab-btn-signup");
+  const formSignIn = document.getElementById("form-signin");
+  const formSignUp = document.getElementById("form-signup");
+  const errSignIn = document.getElementById("signin-error");
+  const errSignUp = document.getElementById("signup-error");
+
+  // Tab Switching
+  if (tabSignIn && tabSignUp) {
+    tabSignIn.onclick = () => {
+      tabSignIn.classList.add("active");
+      tabSignUp.classList.remove("active");
+      formSignIn.style.display = "flex";
+      formSignUp.style.display = "none";
+      if (errSignIn) errSignIn.style.display = "none";
+      if (errSignUp) errSignUp.style.display = "none";
+    };
+
+    tabSignUp.onclick = () => {
+      tabSignUp.classList.add("active");
+      tabSignIn.classList.remove("active");
+      formSignUp.style.display = "flex";
+      formSignIn.style.display = "none";
+      if (errSignIn) errSignIn.style.display = "none";
+      if (errSignUp) errSignUp.style.display = "none";
+    };
+  }
+
+  // Handle Sign In submission
+  const handleSignIn = async () => {
+    const email = document.getElementById("login-email")?.value.trim() || "";
+    const password = document.getElementById("login-password")?.value || "";
+
+    if (!email || !password) {
+      if (errSignIn) {
+        errSignIn.innerText = "Please enter both email and password.";
+        errSignIn.style.display = "flex";
+      }
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+
+      if (res.ok && data.status === "success") {
+        if (errSignIn) errSignIn.style.display = "none";
+        saveSession(data.user);
+        showToast(`Welcome back, ${data.user.name}!`);
+        const emailInput = document.getElementById("login-email");
+        const passInput = document.getElementById("login-password");
+        if (emailInput) emailInput.value = "";
+        if (passInput) passInput.value = "";
+        await applyActivePortal();
+      } else {
+        if (errSignIn) {
+          errSignIn.innerText = data.detail || "Invalid email or password.";
+          errSignIn.style.display = "flex";
+        }
+      }
+    } catch (err) {
+      console.error("Sign in failed:", err);
+      if (errSignIn) {
+        errSignIn.innerText = "Network error communicating with authentication service.";
+        errSignIn.style.display = "flex";
+      }
+    }
+  };
+
+  const btnSignIn = document.getElementById("btn-submit-signin");
+  if (btnSignIn) btnSignIn.onclick = handleSignIn;
+  if (formSignIn) {
+    formSignIn.onsubmit = (e) => {
+      e.preventDefault();
+      handleSignIn();
+    };
+  }
+
+  // Handle Registration submission
+  const handleSignUp = async () => {
+    const name = document.getElementById("reg-name")?.value.trim() || "";
+    const email = document.getElementById("reg-email")?.value.trim() || "";
+    const password = document.getElementById("reg-password")?.value || "";
+    const primary_interest = document.getElementById("reg-interest")?.value || "Electronics";
+
+    if (!name || !email || !password) {
+      if (errSignUp) {
+        errSignUp.innerText = "Please complete all registration fields.";
+        errSignUp.style.display = "flex";
+      }
+      return;
+    }
+
+    if (password.length < 4) {
+      if (errSignUp) {
+        errSignUp.innerText = "Password must be at least 4 characters long.";
+        errSignUp.style.display = "flex";
+      }
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password, primary_interest })
+      });
+      const data = await res.json();
+
+      if (res.ok && data.status === "success") {
+        if (errSignUp) errSignUp.style.display = "none";
+        saveSession(data.user);
+        showToast(`Account registered! Welcome to GraphStore, ${data.user.name}.`);
+        const nameInput = document.getElementById("reg-name");
+        const emailInput = document.getElementById("reg-email");
+        const passInput = document.getElementById("reg-password");
+        if (nameInput) nameInput.value = "";
+        if (emailInput) emailInput.value = "";
+        if (passInput) passInput.value = "";
+        await applyActivePortal();
+      } else {
+        if (errSignUp) {
+          errSignUp.innerText = data.detail || "Registration failed. Please try again.";
+          errSignUp.style.display = "flex";
+        }
+      }
+    } catch (err) {
+      console.error("Registration failed:", err);
+      if (errSignUp) {
+        errSignUp.innerText = "Network error during account registration.";
+        errSignUp.style.display = "flex";
+      }
+    }
+  };
+
+  const btnSignUp = document.getElementById("btn-submit-signup");
+  if (btnSignUp) btnSignUp.onclick = handleSignUp;
+  if (formSignUp) {
+    formSignUp.onsubmit = (e) => {
+      e.preventDefault();
+      handleSignUp();
+    };
+  }
+
+  // Logout Listeners
+  const btnAdminLogout = document.getElementById("btn-admin-logout");
+  if (btnAdminLogout) {
+    btnAdminLogout.onclick = async () => {
+      clearSession();
+      showToast("Signed out of Admin Console.");
+      await applyActivePortal();
+    };
+  }
+
+  const btnCustLogout = document.getElementById("btn-customer-logout");
+  if (btnCustLogout) {
+    btnCustLogout.onclick = async () => {
+      clearSession();
+      showToast("Signed out of customer store.");
+      await applyActivePortal();
+    };
+  }
+
+  // Customer theme toggle
+  const custThemeToggle = document.getElementById("btn-cust-theme-toggle");
+  if (custThemeToggle) {
+    custThemeToggle.onclick = () => {
+      const current = document.documentElement.getAttribute("data-theme") || "dark";
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("graphrec_theme", next);
+      const icon1 = document.getElementById("theme-icon");
+      const icon2 = document.getElementById("cust-theme-icon");
+      if (icon1) icon1.className = next === "dark" ? "fas fa-moon" : "fas fa-sun";
+      if (icon2) icon2.className = next === "dark" ? "fas fa-moon" : "fas fa-sun";
+    };
+  }
+
+  // Checkout button listener
+  const btnCheckout = document.getElementById("btn-cust-checkout");
+  if (btnCheckout) {
+    btnCheckout.onclick = async () => {
+      const session = getCurrentSession();
+      if (session) {
+        await checkoutCustomerCart(session.user_id);
+      }
+    };
+  }
+}
+
+async function applyActivePortal() {
+  const session = getCurrentSession();
+  const authView = document.getElementById("view-auth");
+  const adminView = document.getElementById("view-admin");
+  const custView = document.getElementById("view-customer");
+
+  if (!session) {
+    if (authView) authView.style.display = "block";
+    if (adminView) adminView.style.display = "none";
+    if (custView) custView.style.display = "none";
+    return;
+  }
+
+  if (session.role === "admin") {
+    if (authView) authView.style.display = "none";
+    if (adminView) adminView.style.display = "block";
+    if (custView) custView.style.display = "none";
+
+    currentUserId = session.user_id || "U0001";
+    await initAdminPortal();
+  } else {
+    // Regular Customer account
+    if (authView) authView.style.display = "none";
+    if (adminView) adminView.style.display = "none";
+    if (custView) custView.style.display = "block";
+
+    await initCustomerPortal(session);
+  }
+}
+
+// ==========================================================================
+// CUSTOMER E-COMMERCE PORTAL CONTROLLER
+// ==========================================================================
+
+let currentCustomerTab = "cust-tab-foryou";
+let customerCatalogFilter = "ALL";
+
+async function initCustomerPortal(session) {
+  const displayName = document.getElementById("cust-display-name");
+  if (displayName) displayName.innerText = session.name || "Customer";
+
+  const displaySub = document.getElementById("cust-display-sub");
+  if (displaySub) displaySub.innerText = `${session.user_id} • ${session.primary_interest || "General"}`;
+
+  const avatarBadge = document.getElementById("cust-avatar-badge");
+  if (avatarBadge) avatarBadge.innerText = (session.name || "C").charAt(0).toUpperCase();
+
+  const welcomeTitle = document.getElementById("cust-welcome-title");
+  if (welcomeTitle) welcomeTitle.innerText = `Welcome back, ${session.name.split(" ")[0]}!`;
+
+  const welcomeSubtitle = document.getElementById("cust-welcome-subtitle");
+  if (welcomeSubtitle) {
+    welcomeSubtitle.innerText = `Here are your live graph recommendations tailored to your interest in ${session.primary_interest || "our collections"}. Interactions dynamically adapt your neural graph embeddings.`;
+  }
+
+  setupCustomerNavigation();
+  setupCustomerCatFilters();
+  setupCustomerSearch();
+
+  await loadCustomerCart(session.user_id);
+  await loadCustomerRecommendations(session.user_id);
+  await loadCustomerCatalog();
+  await loadCustomerOrders(session.user_id);
+}
+
+function setupCustomerNavigation() {
+  document.querySelectorAll(".cust-nav-btn").forEach((btn) => {
+    btn.onclick = () => {
+      const targetTab = btn.getAttribute("data-cust-tab");
+      switchCustomerTab(targetTab);
+    };
+  });
+}
+
+function switchCustomerTab(tabId) {
+  currentCustomerTab = tabId;
+  document.querySelectorAll(".cust-nav-btn").forEach((b) => {
+    if (b.getAttribute("data-cust-tab") === tabId) b.classList.add("active");
+    else b.classList.remove("active");
+  });
+  document.querySelectorAll(".cust-tab-panel").forEach((panel) => {
+    if (panel.id === tabId) panel.style.display = "block";
+    else panel.style.display = "none";
+  });
+  const session = getCurrentSession();
+  if (session) {
+    if (tabId === "cust-tab-cart") loadCustomerCart(session.user_id);
+    if (tabId === "cust-tab-orders") loadCustomerOrders(session.user_id);
+  }
+}
+
+async function loadCustomerRecommendations(userId) {
+  const session = getCurrentSession();
+  const uId = userId || (session ? session.user_id : "U0001");
+  const container = document.getElementById("cust-foryou-grid");
+  if (!container) return;
+  container.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:3rem; color:var(--text-muted);"><i class="fas fa-spinner fa-spin fa-2x" style="margin-bottom:1rem; display:block;"></i>Synthesizing personalized graph recommendations...</div>`;
+
+  try {
+    const res = await fetch(`/api/recommendations?user_id=${uId}&model_name=hybrid&k=8`);
+    const data = await res.json();
+    const recs = data.recommendations || [];
+
+    if (recs.length === 0) {
+      container.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:3rem; color:var(--text-muted);">Explore our catalog to discover recommendations tailored for you!</div>`;
+      return;
+    }
+
+    container.innerHTML = "";
+    recs.forEach((item) => {
+      const card = document.createElement("div");
+      card.className = "cust-product-card";
+      const fullProd = allProducts.find((p) => p.product_id === item.product_id) || item;
+      const imgUrl = getProductImageUrl(fullProd);
+      const scorePct = Math.min(99, Math.round((item.adjusted_score || item.score || 0.88) * 100));
+
+      card.innerHTML = `
+        <div class="cust-card-img-wrap" style="cursor:pointer;" onclick="openProductDetailsModal('${item.product_id}')">
+          <img src="${imgUrl}" alt="${item.name}" class="cust-card-img" loading="lazy">
+        </div>
+        <div class="cust-card-body">
+          <div class="cust-card-cat">${item.category}</div>
+          <div class="cust-card-title" style="cursor:pointer;" onclick="openProductDetailsModal('${item.product_id}')">${item.name}</div>
+          <div class="cust-card-match">
+            <i class="fas fa-magic"></i> ${scorePct}% Graph Affinity
+          </div>
+          <div class="cust-card-footer">
+            <div class="cust-card-price">${formatINR(item.price)}</div>
+            <button class="btn-add-cart" onclick="addToCustomerCart('${uId}', '${item.product_id}')">
+              <i class="fas fa-shopping-cart"></i> Add to Cart
+            </button>
+          </div>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  } catch (err) {
+    console.error("Failed to load customer recommendations:", err);
+    container.innerHTML = `<div style="grid-column:1/-1; color:#F87171; text-align:center; padding:2rem;">Failed to load recommendations.</div>`;
+  }
+}
+
+function renderCustomerCatalog() {
+  const container = document.getElementById("cust-catalog-grid");
+  if (!container) return;
+
+  const session = getCurrentSession();
+  const uId = session ? session.user_id : "U0001";
+  const searchVal = (document.getElementById("cust-catalog-search")?.value || "").toLowerCase().trim();
+
+  let filtered = allProducts;
+  if (customerCatalogFilter !== "ALL") {
+    filtered = filtered.filter((p) => p.category === customerCatalogFilter);
+  }
+  if (searchVal) {
+    filtered = filtered.filter((p) =>
+      p.name.toLowerCase().includes(searchVal) ||
+      p.category.toLowerCase().includes(searchVal) ||
+      (p.brand && p.brand.toLowerCase().includes(searchVal))
+    );
+  }
+
+  const countBadge = document.getElementById("cust-catalog-count");
+  if (countBadge) countBadge.innerText = `${filtered.length} Products`;
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:3rem; color:var(--text-muted);">No products match your criteria.</div>`;
+    return;
+  }
+
+  container.innerHTML = "";
+  filtered.forEach((prod) => {
+    const card = document.createElement("div");
+    card.className = "cust-product-card";
+    const imgUrl = getProductImageUrl(prod);
+
+    card.innerHTML = `
+      <div class="cust-card-img-wrap" style="cursor:pointer;" onclick="openProductDetailsModal('${prod.product_id}')">
+        <img src="${imgUrl}" alt="${prod.name}" class="cust-card-img" loading="lazy">
+      </div>
+      <div class="cust-card-body">
+        <div class="cust-card-cat">${prod.category}</div>
+        <div class="cust-card-title" style="cursor:pointer;" onclick="openProductDetailsModal('${prod.product_id}')">${prod.name}</div>
+        <div class="cust-card-footer">
+          <div class="cust-card-price">${formatINR(prod.price)}</div>
+          <button class="btn-add-cart" onclick="addToCustomerCart('${uId}', '${prod.product_id}')">
+            <i class="fas fa-shopping-cart"></i> Add to Cart
+          </button>
+        </div>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function setupCustomerCatFilters() {
+  const container = document.getElementById("cust-cat-filters");
+  if (!container) return;
+  container.querySelectorAll(".cat-pill").forEach((btn) => {
+    btn.onclick = () => {
+      container.querySelectorAll(".cat-pill").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      customerCatalogFilter = btn.getAttribute("data-cust-cat") || "ALL";
+      renderCustomerCatalog();
+    };
+  });
+}
+
+function setupCustomerSearch() {
+  const searchInput = document.getElementById("cust-catalog-search");
+  if (searchInput) {
+    searchInput.oninput = () => {
+      renderCustomerCatalog();
+    };
+  }
+}
+
+async function loadCustomerCatalog() {
+  if (allProducts.length === 0) {
+    await loadProductsCatalog();
+  }
+  renderCustomerCatalog();
+}
+
+async function loadCustomerCart(userId) {
+  try {
+    const res = await fetch(`/api/cart?user_id=${userId}`);
+    const data = await res.json();
+    const items = data.items || [];
+
+    const badge = document.getElementById("cust-cart-badge");
+    if (badge) badge.innerText = data.count || 0;
+
+    const countHeader = document.getElementById("cust-cart-item-count");
+    if (countHeader) countHeader.innerText = `${data.count || 0} items`;
+
+    const subtotalEl = document.getElementById("cust-cart-subtotal");
+    const taxEl = document.getElementById("cust-cart-tax");
+    const shippingEl = document.getElementById("cust-cart-shipping");
+    const grandtotalEl = document.getElementById("cust-cart-grandtotal");
+
+    const subtotal = Number(data.total_price || 0);
+    const tax = Math.round(subtotal * 0.08 * 100) / 100;
+    const shipping = subtotal > 50 || subtotal === 0 ? 0 : 9.99;
+    const grandTotal = subtotal === 0 ? 0 : subtotal + tax + shipping;
+
+    if (subtotalEl) subtotalEl.innerText = formatINR(subtotal);
+    if (taxEl) taxEl.innerText = formatINR(tax);
+    if (shippingEl) shippingEl.innerText = shipping === 0 ? "Free" : formatINR(shipping);
+    if (grandtotalEl) grandtotalEl.innerText = formatINR(grandTotal);
+
+    const listContainer = document.getElementById("cust-cart-items-list");
+    if (!listContainer) return;
+
+    if (items.length === 0) {
+      listContainer.innerHTML = `
+        <div style="text-align:center; padding:3rem 1rem; color:var(--text-muted);">
+          <i class="fas fa-shopping-bag" style="font-size:2.5rem; margin-bottom:1rem; opacity:0.3; display:block;"></i>
+          <p style="font-size:0.95rem; margin-bottom:1rem;">Your shopping cart is currently empty.</p>
+          <button class="btn-primary" onclick="switchCustomerTab('cust-tab-catalog')" style="padding:0.5rem 1.25rem;">
+            Explore Catalog
+          </button>
+        </div>
+      `;
+      return;
+    }
+
+    listContainer.innerHTML = "";
+    items.forEach((item) => {
+      const fullProd = allProducts.find((p) => p.product_id === item.product_id) || item;
+      const imgUrl = getProductImageUrl(fullProd);
+      const lineTotal = Number(item.price || 0) * (item.quantity || 1);
+
+      const row = document.createElement("div");
+      row.className = "cart-item-row";
+      row.innerHTML = `
+        <div class="cart-item-info">
+          <img src="${imgUrl}" alt="${item.name}" class="cart-item-thumb">
+          <div class="cart-item-details">
+            <h4>${item.name}</h4>
+            <p>${item.category} &bull; ${formatINR(item.price)} each</p>
+          </div>
+        </div>
+        <div class="cart-qty-group">
+          <button class="cart-qty-btn" onclick="modifyCustomerCartQuantity('${userId}', '${item.product_id}', 'remove')">&minus;</button>
+          <span class="cart-qty-num">${item.quantity || 1}</span>
+          <button class="cart-qty-btn" onclick="modifyCustomerCartQuantity('${userId}', '${item.product_id}', 'add')">&plus;</button>
+        </div>
+        <div class="cart-item-price-col">
+          <div class="cart-item-price">${formatINR(lineTotal)}</div>
+        </div>
+      `;
+      listContainer.appendChild(row);
+    });
+  } catch (err) {
+    console.error("Failed to load customer cart:", err);
+  }
+}
+
+async function addToCustomerCart(userId, productId, silent = false) {
+  try {
+    const res = await fetch("/api/cart/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, product_id: productId })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      if (!silent) showToast(data.message || "Added item to cart!");
+      await loadCustomerCart(userId);
+    } else {
+      showToast(data.detail || "Could not add item to cart", true);
+    }
+  } catch (err) {
+    console.error("Add to cart failed:", err);
+    showToast("Network error updating cart", true);
+  }
+}
+
+async function modifyCustomerCartQuantity(userId, productId, action) {
+  const endpoint = action === "add" ? "/api/cart/add" : "/api/cart/remove";
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, product_id: productId })
+    });
+    if (res.ok) {
+      await loadCustomerCart(userId);
+    }
+  } catch (err) {
+    console.error("Cart quantity update failed:", err);
+  }
+}
+
+async function checkoutCustomerCart(userId) {
+  try {
+    const res = await fetch("/api/cart/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`🎉 Order ${data.order.order_id} confirmed successfully!`);
+      const modal = document.getElementById("product-details-modal");
+      if (modal && modal.open) modal.close();
+      await loadCustomerCart(userId);
+      await loadCustomerOrders(userId);
+      switchCustomerTab("cust-tab-orders");
+    } else {
+      showToast(data.detail || "Checkout failed", true);
+    }
+  } catch (err) {
+    console.error("Checkout failed:", err);
+    showToast("Network error executing checkout", true);
+  }
+}
+
+async function loadCustomerOrders(userId) {
+  const container = document.getElementById("cust-orders-list");
+  if (!container) return;
+  const session = getCurrentSession();
+  const uId = userId || (session ? session.user_id : "U0001");
+
+  try {
+    const res = await fetch(`/api/orders?user_id=${uId}`);
+    const data = await res.json();
+    const orders = data.orders || [];
+
+    if (orders.length === 0) {
+      container.innerHTML = `
+        <div style="text-align:center; padding:3rem; color:var(--text-muted); background:var(--bg-card); border-radius:var(--radius-lg); border:1px solid var(--border-color);">
+          <i class="fas fa-box-open" style="font-size:2.5rem; opacity:0.3; margin-bottom:1rem; display:block;"></i>
+          <p style="font-size:0.95rem;">You haven't placed any orders yet.</p>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = "";
+    orders.forEach((order) => {
+      const card = document.createElement("div");
+      card.className = "order-entry-card";
+      const itemsListHtml = (order.items || []).map((it) => `
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.85rem; padding:0.4rem 0; border-bottom:1px dashed var(--border-color);">
+          <span>${it.quantity}x <b>${it.name}</b> (${it.category})</span>
+          <span style="font-weight:600; color:var(--text-primary);">${formatINR(it.price * it.quantity)}</span>
+        </div>
+      `).join("");
+
+      card.innerHTML = `
+        <div class="order-entry-header">
+          <div>
+            <div class="order-id-tag"><i class="fas fa-receipt" style="margin-right:0.4rem; color:#10B981;"></i>${order.order_id}</div>
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">Placed on ${order.date}</div>
+          </div>
+          <span class="order-status-pill"><i class="fas fa-check-circle"></i> ${order.status}</span>
+        </div>
+        <div style="margin-bottom:1rem;">
+          ${itemsListHtml}
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; padding-top:0.5rem; font-size:0.92rem;">
+          <span style="color:var(--text-muted); font-size:0.8rem;">Includes GST &amp; Live Graph Sync</span>
+          <span style="font-weight:800; font-size:1.1rem; color:var(--text-primary);">Total: ${formatINR(order.total)}</span>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  } catch (err) {
+    console.error("Failed to load customer orders:", err);
+  }
 }

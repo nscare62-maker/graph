@@ -23,16 +23,21 @@ class GraphVisualizer:
         style = NODE_VISUAL_STYLES.get(etype, NODE_VISUAL_STYLES[NodeType.PRODUCT.value])
 
         label = data.get("label", node_id)
-        if len(label) > 16 and etype != NodeType.CATEGORY.value:
-            label = label[:14] + "..."
+        if etype != NodeType.CATEGORY.value and len(label) > 16:
+            words = label.split(" ")
+            if len(words) > 1 and len(label) <= 30:
+                mid = len(words) // 2
+                label = " ".join(words[:mid]) + "\n" + " ".join(words[mid:])
+            elif len(label) > 24:
+                label = label[:22] + "..."
 
-        title = f"<b>{node_id}</b><br/>Type: {etype}<br/>"
+        title = f"{node_id}\nType: {etype}"
         if etype == NodeType.USER.value:
-            title += f"Name: {data.get('name')}<br/>Interests: {data.get('interests')}<br/>Activity: {data.get('activity_level')}"
+            title += f"\nName: {data.get('name')}\nInterests: {data.get('interests')}\nActivity: {data.get('activity_level')}"
         elif etype == NodeType.PRODUCT.value:
-            title += f"Name: {data.get('name')}<br/>Category: {data.get('category')}<br/>Price: ${data.get('price', 0):.2f}"
+            title += f"\nName: {data.get('name')}\nCategory: {data.get('category')}\nPrice: ${data.get('price', 0):.2f}"
         elif etype == NodeType.CATEGORY.value:
-            title += f"Category: {data.get('name')}"
+            title += f"\nCategory: {data.get('name')}"
 
         return {
             "id": node_id,
@@ -57,12 +62,13 @@ class GraphVisualizer:
             "to": v,
             "id": f"{u}->{v}:{key}",
             "label": edge_label,
-            "title": f"Relation: {rel}<br/>Weight: {data.get('weight', 1.0)}",
+            "title": f"Relation: {rel}\nWeight: {data.get('weight', 1.0)}",
             "color": {"color": style["color"], "highlight": style["color"]},
             "width": style["width"],
             "dashes": style.get("dashes", False),
             "arrows": "to",
-            "smooth": {"type": "curvedCW", "roundness": 0.15}
+            "smooth": {"type": "curvedCW", "roundness": 0.15},
+            "raw_data": data
         }
 
     def get_user_ego_network(self, user_id: str, max_items: int = 15, include_category: bool = True) -> Dict[str, Any]:

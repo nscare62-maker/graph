@@ -1,0 +1,46 @@
+{
+  "U0101": [
+    {
+      "order_id": "ORD-1793549376-4873",
+      "date": "2026-11-01 21:39:36",
+      "items": [
+        {
+          "product_id": "P0001",
+          "name": "Smartphone",
+          "category": "Electronics",
+          "price": 437.48,
+          "brand": "Brand-Vertex",
+          "quantity": 1
+        }
+      ],
+      "item_count": 1,
+      "subtotal": 437.48,
+      "tax": 35.0,
+      "shipping": 0.0,
+      "total": 472.48,
+      "status": "Confirmed & Processing"
+    }
+  ],
+  "U0102": [
+    {
+      "order_id": "ORD-1793549775-3811",
+      "date": "2026-11-01 21:46:15",
+      "items": [
+        {
+          "product_id": "P0031",
+          "name": "Yoga Mat V2",
+          "category": "Sports & Fitness",
+          "price": 592.64,
+          "brand": "Brand-Vertex",
+          "quantity": 1
+        }
+      ],
+      "item_count": 1,
+      "subtotal": 592.64,
+      "tax": 47.41,
+      "shipping": 0.0,
+      "total": 640.05,
+      "status": "Confirmed & Processing"
+    }
+  ]
+}

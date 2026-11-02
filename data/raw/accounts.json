@@ -1,0 +1,25 @@
+{
+  "admin@gmail.com": {
+    "email": "admin@gmail.com",
+    "password": "123456",
+    "role": "admin",
+    "name": "System Administrator",
+    "user_id": "U0001"
+  },
+  "alice@example.com": {
+    "email": "alice@example.com",
+    "password": "pass1234",
+    "role": "user",
+    "name": "Alice Smith",
+    "user_id": "U0101",
+    "primary_interest": "Electronics"
+  },
+  "sanjay@gmail.com": {
+    "email": "sanjay@gmail.com",
+    "password": "123456",
+    "role": "user",
+    "name": "sanjay",
+    "user_id": "U0102",
+    "primary_interest": "Electronics"
+  }
+}
